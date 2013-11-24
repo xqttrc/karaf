@@ -19,13 +19,18 @@
 package org.apache.karaf.region.persist.internal;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.Reader;
 import java.io.Writer;
+import java.net.MalformedURLException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 
 import javax.xml.bind.JAXBContext;
 import javax.xml.bind.JAXBException;
@@ -94,10 +99,10 @@ public class RegionsPersistenceImpl implements RegionsPersistence {
                 log.info("initializing region digraph from etc/regions-config.xml");
                 Reader in = new FileReader(regionsConfig);
                 try {
-                        load(this.regionDigraph, in);
-                    } finally {
-                        in.close();
-                    }
+                    load(this.regionDigraph, in);
+                } finally {
+                    in.close();
+                }
             } else {
                 log.info("no regions config file");
             }
@@ -105,7 +110,7 @@ public class RegionsPersistenceImpl implements RegionsPersistence {
 
     }
 
-    void  load(RegionDigraph regionDigraph, Reader in) throws JAXBException, BundleException, InvalidSyntaxException {
+    void load(RegionDigraph regionDigraph, Reader in) throws JAXBException, BundleException, InvalidSyntaxException {
         RegionsType regionsType = load(in);
         load(regionsType, regionDigraph);
     }
@@ -117,25 +122,58 @@ public class RegionsPersistenceImpl implements RegionsPersistence {
 
     void load(RegionsType regionsType, RegionDigraph regionDigraph) throws BundleException, InvalidSyntaxException {
         BundleContext frameworkContext = framework.getBundleContext();
-        for (RegionType regionType: regionsType.getRegion()) {
+        for (RegionType regionType : regionsType.getRegion()) {
             String name = regionType.getName();
             log.debug("Creating region: " + name);
             Region region = regionDigraph.createRegion(name);
-            for (RegionBundleType bundleType: regionType.getBundle()) {
+            List<Bundle> tobeStarted = new ArrayList<Bundle>();
+            for (RegionBundleType bundleType : regionType.getBundle()) {
                 if (bundleType.getId() != null) {
+                    //Bundle is already in kernel region, is this allowed??
                     region.addBundle(bundleType.getId());
                 } else {
                     Bundle b = frameworkContext.getBundle(bundleType.getLocation());
-                    region.addBundle(b);
+                    if (b == null) {
+                        String location = bundleType.getLocation();
+                        File bundleFile = new File(location);
+                        if (bundleFile.exists() && bundleFile.isFile()) {
+                            try {
+                                b = region.installBundle(bundleFile.toURI().toURL().toExternalForm());
+                            } catch (BundleException e) {
+                                b = null;
+                            } catch (MalformedURLException ex) {
+                                b = null;
+                            }
+                        }
+
+                        //TODO Set startlevel?? 
+                        if (b != null) {
+                            tobeStarted.add(b);
+                        }
+                    } else {
+                        //Should remove bundle from kernel region??
+                    }
+                    if (b != null) {
+                        log.info("Add bundle '" + b.getSymbolicName() + "' to region '" + region.getName() + "'");
+                        region.addBundle(b);
+                    } else {
+                        log.warn("Bundle from location '" + bundleType.getLocation() + "' can not be added");
+                    }
                 }
             }
+            for (Bundle b : tobeStarted) {
+                if (b.getHeaders().get("Fragment-Host") != null) {
+                    continue;
+                }                
+                b.start();
+            }
         }
-        for (FilterType filterType: regionsType.getFilter()) {
+        for (FilterType filterType : regionsType.getFilter()) {
             Region from = regionDigraph.getRegion(filterType.getFrom());
             Region to = regionDigraph.getRegion(filterType.getTo());
             log.debug("Creating filter between " + from.getName() + " to " + to.getName());
             RegionFilterBuilder builder = regionDigraph.createRegionFilterBuilder();
-            for (FilterBundleType bundleType: filterType.getBundle()) {
+            for (FilterBundleType bundleType : filterType.getBundle()) {
                 String symbolicName = bundleType.getSymbolicName();
                 String version = bundleType.getVersion();
                 if (bundleType.getId() != null) {
@@ -147,7 +185,7 @@ public class RegionsPersistenceImpl implements RegionsPersistence {
                 List<FilterAttributeType> attributeTypes = bundleType.getAttribute();
                 buildFilter(symbolicName, version, namespace, attributeTypes, builder);
             }
-            for (FilterPackageType packageType: filterType.getPackage()) {
+            for (FilterPackageType packageType : filterType.getPackage()) {
                 String packageName = packageType.getName();
                 String version = packageType.getVersion();
                 String namespace = BundleRevision.PACKAGE_NAMESPACE;
@@ -164,10 +202,10 @@ public class RegionsPersistenceImpl implements RegionsPersistence {
                 }
             }
             //TODO explicit services?
-            for (FilterNamespaceType namespaceType: filterType.getNamespace()) {
+            for (FilterNamespaceType namespaceType : filterType.getNamespace()) {
                 String namespace = namespaceType.getName();
                 HashMap<String, Object> attributes = new HashMap<String, Object>();
-                for (FilterAttributeType attributeType: namespaceType.getAttribute()) {
+                for (FilterAttributeType attributeType : namespaceType.getAttribute()) {
                     attributes.put(attributeType.getName(), attributeType.getValue());
                 }
                 String filter = ManifestHeaderProcessor.generateFilter(attributes);
@@ -192,7 +230,7 @@ public class RegionsPersistenceImpl implements RegionsPersistence {
         if (version != null) {
             attributes.put("version", version);
         }
-        for (FilterAttributeType attributeType: attributeTypes) {
+        for (FilterAttributeType attributeType : attributeTypes) {
             attributes.put(attributeType.getName(), attributeType.getValue());
         }
         String filter = ManifestHeaderProcessor.generateFilter(attributes);
