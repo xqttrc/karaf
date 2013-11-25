@@ -121,11 +121,61 @@ public class RegionsPersistenceImpl implements RegionsPersistence {
     }
 
     void load(RegionsType regionsType, RegionDigraph regionDigraph) throws BundleException, InvalidSyntaxException {
-        BundleContext frameworkContext = framework.getBundleContext();
+        BundleContext frameworkContext = framework.getBundleContext();      
         for (RegionType regionType : regionsType.getRegion()) {
             String name = regionType.getName();
-            log.debug("Creating region: " + name);
-            Region region = regionDigraph.createRegion(name);
+            if(log.isDebugEnabled())log.debug("Creating region: " + name);
+            regionDigraph.createRegion(name);
+        }
+        for (FilterType filterType : regionsType.getFilter()) {
+            Region from = regionDigraph.getRegion(filterType.getFrom());
+            Region to = regionDigraph.getRegion(filterType.getTo());
+            if(log.isDebugEnabled())log.debug("Creating filter between " + from.getName() + " to " + to.getName());
+            RegionFilterBuilder builder = regionDigraph.createRegionFilterBuilder();
+            for (FilterBundleType bundleType : filterType.getBundle()) {
+                String symbolicName = bundleType.getSymbolicName();
+                String version = bundleType.getVersion();
+                if (bundleType.getId() != null) {
+                    Bundle b = frameworkContext.getBundle(bundleType.getId());
+                    symbolicName = b.getSymbolicName();
+                    version = b.getVersion().toString();
+                }
+                String namespace = BundleRevision.BUNDLE_NAMESPACE;
+                List<FilterAttributeType> attributeTypes = bundleType.getAttribute();
+                buildFilter(symbolicName, version, namespace, attributeTypes, builder);
+            }
+            for (FilterPackageType packageType : filterType.getPackage()) {
+                String packageName = packageType.getName();
+                String version = packageType.getVersion();
+                String namespace = BundleRevision.PACKAGE_NAMESPACE;
+                List<FilterAttributeType> attributeTypes = packageType.getAttribute();
+                buildFilter(packageName, version, namespace, attributeTypes, builder);
+            }
+            if (to == kernel) {
+                //add framework exports
+                BundleRevision rev = framework.adapt(BundleRevision.class);
+                List<BundleCapability> caps = rev.getDeclaredCapabilities(BundleRevision.PACKAGE_NAMESPACE);
+                for (BundleCapability cap : caps) {
+                    String filter = ManifestHeaderProcessor.generateFilter(filter(cap.getAttributes()));
+                    builder.allow(BundleRevision.PACKAGE_NAMESPACE, filter);
+                }
+            }
+            //TODO explicit services?
+            for (FilterNamespaceType namespaceType : filterType.getNamespace()) {
+                String namespace = namespaceType.getName();
+                HashMap<String, Object> attributes = new HashMap<String, Object>();
+                for (FilterAttributeType attributeType : namespaceType.getAttribute()) {
+                    attributes.put(attributeType.getName(), attributeType.getValue());
+                }
+                String filter = ManifestHeaderProcessor.generateFilter(attributes);
+                builder.allow(namespace, filter);
+            }
+            regionDigraph.connect(from, builder.build(), to);
+        }
+        for (RegionType regionType : regionsType.getRegion()) {
+            String name = regionType.getName();
+            if(log.isDebugEnabled())log.debug("Install bundles to region: " + name);
+            Region region = regionDigraph.getRegion(name);
             List<Bundle> tobeStarted = new ArrayList<Bundle>();
             for (RegionBundleType bundleType : regionType.getBundle()) {
                 if (bundleType.getId() != null) {
@@ -167,51 +217,6 @@ public class RegionsPersistenceImpl implements RegionsPersistence {
                 }                
                 b.start();
             }
-        }
-        for (FilterType filterType : regionsType.getFilter()) {
-            Region from = regionDigraph.getRegion(filterType.getFrom());
-            Region to = regionDigraph.getRegion(filterType.getTo());
-            log.debug("Creating filter between " + from.getName() + " to " + to.getName());
-            RegionFilterBuilder builder = regionDigraph.createRegionFilterBuilder();
-            for (FilterBundleType bundleType : filterType.getBundle()) {
-                String symbolicName = bundleType.getSymbolicName();
-                String version = bundleType.getVersion();
-                if (bundleType.getId() != null) {
-                    Bundle b = frameworkContext.getBundle(bundleType.getId());
-                    symbolicName = b.getSymbolicName();
-                    version = b.getVersion().toString();
-                }
-                String namespace = BundleRevision.BUNDLE_NAMESPACE;
-                List<FilterAttributeType> attributeTypes = bundleType.getAttribute();
-                buildFilter(symbolicName, version, namespace, attributeTypes, builder);
-            }
-            for (FilterPackageType packageType : filterType.getPackage()) {
-                String packageName = packageType.getName();
-                String version = packageType.getVersion();
-                String namespace = BundleRevision.PACKAGE_NAMESPACE;
-                List<FilterAttributeType> attributeTypes = packageType.getAttribute();
-                buildFilter(packageName, version, namespace, attributeTypes, builder);
-            }
-            if (to == kernel) {
-                //add framework exports
-                BundleRevision rev = framework.adapt(BundleRevision.class);
-                List<BundleCapability> caps = rev.getDeclaredCapabilities(BundleRevision.PACKAGE_NAMESPACE);
-                for (BundleCapability cap : caps) {
-                    String filter = ManifestHeaderProcessor.generateFilter(filter(cap.getAttributes()));
-                    builder.allow(BundleRevision.PACKAGE_NAMESPACE, filter);
-                }
-            }
-            //TODO explicit services?
-            for (FilterNamespaceType namespaceType : filterType.getNamespace()) {
-                String namespace = namespaceType.getName();
-                HashMap<String, Object> attributes = new HashMap<String, Object>();
-                for (FilterAttributeType attributeType : namespaceType.getAttribute()) {
-                    attributes.put(attributeType.getName(), attributeType.getValue());
-                }
-                String filter = ManifestHeaderProcessor.generateFilter(attributes);
-                builder.allow(namespace, filter);
-            }
-            regionDigraph.connect(from, builder.build(), to);
         }
     }
 
